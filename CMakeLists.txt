@@ -69,6 +69,7 @@ add_library(scanner STATIC
     src/ElfScanner.cpp
     src/ElfScannerArm64.cpp
     src/PeScanner.cpp
+    src/helper.cpp
 )
 
 target_include_directories(scanner PUBLIC

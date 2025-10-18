@@ -14,6 +14,7 @@ struct ElfScanner::Impl {
     std::vector<SymbolInfo> symbols;
     csh csHandle = 0;
     bool initialized = false;
+    std::vector<FunctionRange> functionRanges; // 缓存函数范围
 
     ~Impl() {
         if (csHandle != 0) {
@@ -34,6 +35,217 @@ struct ElfScanner::Impl {
         // 这里需要完整的ELF解析实现
         // 为简化起见，这里仅做基本结构
         return true;
+    }
+
+    // 读取ULEB128编码的值
+    uint64_t readULEB128(const uint8_t*& ptr, const uint8_t* end) {
+        uint64_t result = 0;
+        int shift = 0;
+        while (ptr < end) {
+            uint8_t byte = *ptr++;
+            result |= static_cast<uint64_t>(byte & 0x7F) << shift;
+            if ((byte & 0x80) == 0) {
+                break;
+            }
+            shift += 7;
+        }
+        return result;
+    }
+
+    // 读取SLEB128编码的值
+    int64_t readSLEB128(const uint8_t*& ptr, const uint8_t* end) {
+        int64_t result = 0;
+        int shift = 0;
+        uint8_t byte;
+        while (ptr < end) {
+            byte = *ptr++;
+            result |= static_cast<int64_t>(byte & 0x7F) << shift;
+            shift += 7;
+            if ((byte & 0x80) == 0) {
+                break;
+            }
+        }
+        // 符号扩展
+        if (shift < 64 && (byte & 0x40)) {
+            result |= -(1LL << shift);
+        }
+        return result;
+    }
+
+    // 读取编码的指针值
+    uint64_t readEncodedPointer(const uint8_t*& ptr, const uint8_t* end, 
+                                 uint8_t encoding, uint64_t baseAddr) {
+        if (encoding == 0xFF) { // DW_EH_PE_omit
+            return 0;
+        }
+
+        uint64_t result = 0;
+        const uint8_t* startPtr = ptr;
+
+        // 读取值
+        switch (encoding & 0x0F) {
+            case 0x00: // DW_EH_PE_absptr
+                if (ptr + 8 <= end) {
+                    std::memcpy(&result, ptr, 8);
+                    ptr += 8;
+                }
+                break;
+            case 0x01: // DW_EH_PE_uleb128
+                result = readULEB128(ptr, end);
+                break;
+            case 0x02: // DW_EH_PE_udata2
+                if (ptr + 2 <= end) {
+                    std::memcpy(&result, ptr, 2);
+                    ptr += 2;
+                }
+                break;
+            case 0x03: // DW_EH_PE_udata4
+                if (ptr + 4 <= end) {
+                    std::memcpy(&result, ptr, 4);
+                    ptr += 4;
+                }
+                break;
+            case 0x04: // DW_EH_PE_udata8
+                if (ptr + 8 <= end) {
+                    std::memcpy(&result, ptr, 8);
+                    ptr += 8;
+                }
+                break;
+            case 0x09: // DW_EH_PE_sleb128
+                result = static_cast<uint64_t>(readSLEB128(ptr, end));
+                break;
+            case 0x0A: // DW_EH_PE_sdata2
+                if (ptr + 2 <= end) {
+                    int16_t val;
+                    std::memcpy(&val, ptr, 2);
+                    result = static_cast<uint64_t>(val);
+                    ptr += 2;
+                }
+                break;
+            case 0x0B: // DW_EH_PE_sdata4
+                if (ptr + 4 <= end) {
+                    int32_t val;
+                    std::memcpy(&val, ptr, 4);
+                    result = static_cast<uint64_t>(val);
+                    ptr += 4;
+                }
+                break;
+            case 0x0C: // DW_EH_PE_sdata8
+                if (ptr + 8 <= end) {
+                    int64_t val;
+                    std::memcpy(&val, ptr, 8);
+                    result = static_cast<uint64_t>(val);
+                    ptr += 8;
+                }
+                break;
+            default:
+                return 0;
+        }
+
+        // 应用相对地址修正
+        switch (encoding & 0x70) {
+            case 0x00: // DW_EH_PE_absptr
+                break;
+            case 0x10: // DW_EH_PE_pcrel
+                result += baseAddr + (startPtr - fileData.data());
+                break;
+            case 0x20: // DW_EH_PE_textrel
+            case 0x30: // DW_EH_PE_datarel
+            case 0x40: // DW_EH_PE_funcrel
+            case 0x50: // DW_EH_PE_aligned
+                // 暂不支持这些编码方式
+                break;
+        }
+
+        return result;
+    }
+
+    // 解析 .eh_frame 段以提取函数范围
+    void parseEhFrame() {
+        functionRanges.clear();
+
+        // 查找 .eh_frame 段
+        const SectionInfo* ehFrameSection = nullptr;
+        for (const auto& section : sections) {
+            if (section.name == ".eh_frame") {
+                ehFrameSection = &section;
+                break;
+            }
+        }
+
+        if (!ehFrameSection || ehFrameSection->data.empty()) {
+            return;
+        }
+
+        const uint8_t* ptr = ehFrameSection->data.data();
+        const uint8_t* end = ptr + ehFrameSection->data.size();
+        uint64_t baseAddr = ehFrameSection->address;
+
+        while (ptr < end) {
+            const uint8_t* entryStart = ptr;
+            
+            // 读取长度字段
+            if (ptr + 4 > end) break;
+            uint32_t length;
+            std::memcpy(&length, ptr, 4);
+            ptr += 4;
+
+            if (length == 0) break; // 终止符
+
+            // 检查是否为扩展长度
+            bool is64bit = false;
+            if (length == 0xFFFFFFFF) {
+                if (ptr + 8 > end) break;
+                uint64_t length64;
+                std::memcpy(&length64, ptr, 8);
+                ptr += 8;
+                length = static_cast<uint32_t>(length64);
+                is64bit = true;
+            }
+
+            const uint8_t* entryEnd = ptr + length;
+            if (entryEnd > end) break;
+
+            // 读取 CIE ID
+            uint32_t cieId;
+            std::memcpy(&cieId, ptr, 4);
+            ptr += 4;
+
+            if (cieId == 0) {
+                // 这是一个 CIE (Common Information Entry),跳过
+                ptr = entryEnd;
+                continue;
+            }
+
+            // 这是一个 FDE (Frame Description Entry)
+            // CIE ID 实际上是指向对应 CIE 的偏移量
+
+            // 我们需要找到对应的 CIE 来获取编码格式
+            // 为了简化,我们假设使用常见的编码格式
+            uint8_t fdeEncoding = 0x1B; // DW_EH_PE_pcrel | DW_EH_PE_sdata4
+
+            // 读取 PC begin (函数起始地址)
+            uint64_t pcBegin = readEncodedPointer(ptr, entryEnd, fdeEncoding, 
+                                                   baseAddr + (entryStart - ehFrameSection->data.data()));
+
+            // 读取 PC range (函数大小)
+            uint64_t pcRange = readEncodedPointer(ptr, entryEnd, fdeEncoding & 0x0F, 0);
+
+            if (pcBegin > 0 && pcRange > 0) {
+                FunctionRange range;
+                range.start = pcBegin;
+                range.end = pcBegin + pcRange;
+                functionRanges.push_back(range);
+            }
+
+            ptr = entryEnd;
+        }
+
+        // 按起始地址排序
+        std::sort(functionRanges.begin(), functionRanges.end(), 
+                  [](const FunctionRange& a, const FunctionRange& b) {
+                      return a.start < b.start;
+                  });
     }
 };
 
@@ -59,6 +271,12 @@ bool ElfScanner::loadFile(const std::string& filePath) {
     }
 
     pImpl->initialized = pImpl->parseElf();
+    
+    // 解析 .eh_frame 段以获取函数范围
+    if (pImpl->initialized) {
+        pImpl->parseEhFrame();
+    }
+    
     return pImpl->initialized;
 }
 
@@ -89,62 +307,12 @@ std::optional<SectionInfo> ElfScanner::getTextSection() const {
 }
 
 std::vector<FunctionRange> ElfScanner::getFunctionRanges() const {
-    std::vector<FunctionRange> functions;
-    
     if (!pImpl->initialized) {
-        return functions;
+        return std::vector<FunctionRange>();
     }
 
-    auto textSection = getTextSection();
-    if (!textSection) {
-        return functions;
-    }
-
-    cs_insn* insn = nullptr;
-    size_t count = cs_disasm(pImpl->csHandle, 
-                             textSection->data.data(), 
-                             textSection->data.size(),
-                             textSection->address, 
-                             0, 
-                             &insn);
-
-    if (count > 0) {
-        FunctionRange* currentFunc = nullptr;
-        
-        for (size_t i = 0; i < count; i++) {
-            // 检测函数序言: push rbp
-            if (strcmp(insn[i].mnemonic, "push") == 0 && 
-                strcmp(insn[i].op_str, "rbp") == 0) {
-                
-                if (currentFunc != nullptr) {
-                    functions.push_back(*currentFunc);
-                }
-                currentFunc = new FunctionRange{insn[i].address, 0};
-            }
-            // 检测: mov rbp, rsp
-            else if (strcmp(insn[i].mnemonic, "mov") == 0 && 
-                     strcmp(insn[i].op_str, "rbp, rsp") == 0) {
-                
-                if (currentFunc != nullptr) {
-                    functions.push_back(*currentFunc);
-                }
-                currentFunc = new FunctionRange{insn[i].address, 0};
-            }
-
-            if (currentFunc != nullptr) {
-                currentFunc->end = insn[i].address + insn[i].size;
-            }
-        }
-
-        if (currentFunc != nullptr) {
-            functions.push_back(*currentFunc);
-            delete currentFunc;
-        }
-
-        cs_free(insn, count);
-    }
-
-    return functions;
+    // 直接返回从 .eh_frame 解析得到的函数范围
+    return pImpl->functionRanges;
 }
 
 std::optional<FunctionRange> ElfScanner::findFunctionContainingAddress(uint64_t address) const {
