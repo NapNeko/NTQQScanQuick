@@ -1,3 +1,21 @@
+
+# NTQQScanQuick
+快速对NTQQ进行Scan分析Offset
+
+## 特点
+- [x] 几乎不受版本约束？
+- [x] 速度遥遥领先IDA！
+- [x] 暴力的方法就是豪.
+
+## 进度
+- [x] Aes Scan
+- [x] 业务Tea Scan
+- [x] 登录Tea Scan
+
+## 测试
+效率极佳
+
+```bash
 PS E:\NewDevelop\PeRedirect\out\build\Visual Studio Community 2022 Release - amd64\Debug> ."E:/NewDevelop/PeRedirect/out/build/Visual Studio Community 2022 Release - amd64/Debug/PeRedirect.exe"
 === PE TEA Scanner ===
 
@@ -68,3 +86,4 @@ TEA Decryption Functions Found: 3
   [3] 0x182BFE285
 
 [INFO] Scan completed in 0.798918 seconds
+```
