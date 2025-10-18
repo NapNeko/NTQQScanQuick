@@ -1,6 +1,5 @@
 #pragma once
 
-#include <capstone/capstone.h>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -13,21 +12,6 @@ namespace scanner {
 struct FunctionRange {
     uint64_t start;
     uint64_t end;
-};
-
-// ELF段信息结构
-struct SectionInfo {
-    std::string name;
-    uint64_t address;
-    uint64_t size;
-    std::vector<uint8_t> data;
-};
-
-// ELF符号信息结构
-struct SymbolInfo {
-    std::string name;
-    uint64_t address;
-    uint64_t size;
 };
 
 // ELF扫描器类 (x86-64架构)
@@ -43,19 +27,13 @@ public:
     // 加载ELF文件
     bool loadFile(const std::string& filePath);
 
-    // 查找符号在GOT/PLT中的地址
-    std::optional<uint64_t> findSymbolInGotPlt(const std::string& symbolName) const;
-
-    // 获取.text段
-    std::optional<SectionInfo> getTextSection() const;
-
-    // 获取函数范围
+    // 通过解析 .eh_frame 节获取函数范围 (使用异常处理表)
     std::vector<FunctionRange> getFunctionRanges() const;
 
     // 查找包含指定地址的函数
-    std::optional<FunctionRange> findFunctionContainingAddress(uint64_t address) const;
+    std::optional<FunctionRange> findFunctionContainingAddress(std::vector<scanner::FunctionRange> functions, uint64_t address) const;
 
-    // 获取段的RVA范围
+    // 获取段的虚拟地址范围
     std::pair<std::optional<uint64_t>, std::optional<uint64_t>> 
         getSectionRangeRva(const std::string& sectionName) const;
 
@@ -75,21 +53,24 @@ public:
     std::vector<uint64_t> searchDataPatternAll(const std::string& pattern, 
                                                 uint64_t start, uint64_t end) const;
 
-    // 搜索可能的交叉引用 (相对偏移)
-    std::optional<uint64_t> searchDataMaybeXref(uint64_t stringRva, 
+    // 搜索可能的交叉引用 (RIP相对偏移)
+    std::optional<uint64_t> searchDataMaybeXref(uint64_t targetAddr, 
                                                  uint64_t start, uint64_t end) const;
 
     // 搜索所有可能的交叉引用
-    std::vector<uint64_t> searchDataMaybeXrefAll(uint64_t stringRva, 
+    std::vector<uint64_t> searchDataMaybeXrefAll(uint64_t targetAddr, 
                                                   uint64_t start, uint64_t end) const;
 
-    // 使用模式搜索交叉引用
-    std::optional<uint64_t> searchDataMaybeXrefPattern(const std::string& pattern,
-                                                        uint64_t stringRva,
-                                                        uint64_t start, uint64_t end) const;
+    // 搜索 CALL 指令的交叉引用 (E8 opcode + RIP相对偏移)
+    std::optional<uint64_t> searchCallMaybeXref(uint64_t targetAddr, 
+                                                 uint64_t start, uint64_t end) const;
 
-    // 获取指定范围内所有call指令的目标地址
-    std::vector<uint64_t> getAllCallRange(uint64_t start, uint64_t end) const;
+    // 搜索所有 CALL 指令的交叉引用
+    std::vector<uint64_t> searchCallMaybeXrefAll(uint64_t targetAddr, 
+                                                  uint64_t start, uint64_t end) const;
+
+    // 获取数据
+    std::vector<uint8_t> getData(uint64_t addr, size_t size) const;
 
 private:
     struct Impl;
