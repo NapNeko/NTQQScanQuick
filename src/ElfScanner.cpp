@@ -327,7 +327,9 @@ namespace scanner
 
             const uint8_t *ptr = &fileData[ehFrameSection->offset];
             const uint8_t *end = ptr + ehFrameSection->size;
-            uint64_t baseAddr = ehFrameSection->address;
+            // For pc-relative addressing, baseAddr should be the conversion factor:
+            // virtual_address = baseAddr + file_offset
+            uint64_t baseAddr = ehFrameSection->address - ehFrameSection->offset;
 
             // Store CIE information: offset -> fde_encoding
             std::map<uint64_t, uint8_t> cieEncodings;
@@ -441,7 +443,7 @@ namespace scanner
                                 {
                                     // Personality encoding
                                     uint8_t persEncoding = *ptr++;
-                                    readEncodedPointer(ptr, augDataEnd, persEncoding, baseAddr + entryOffset);
+                                    readEncodedPointer(ptr, augDataEnd, persEncoding, baseAddr);
                                 }
                             }
                         }
@@ -464,12 +466,10 @@ namespace scanner
                     fdeEncoding = it->second;
                 }
 
-                // Calculate base address for pc-relative encoding
-                uint64_t fdeBase = baseAddr + entryOffset + (is64bit ? 12 : 4);
-
                 // Read PC begin (function start address)
+                // baseAddr already contains the conversion factor for pc-relative addressing
                 const uint8_t *pcBeginPtr = ptr;
-                uint64_t pcBegin = readEncodedPointer(ptr, entryEnd, fdeEncoding, fdeBase);
+                uint64_t pcBegin = readEncodedPointer(ptr, entryEnd, fdeEncoding, baseAddr);
 
                 // Read PC range (function size)
                 uint64_t pcRange = readEncodedPointer(ptr, entryEnd, fdeEncoding & 0x0F, 0);
