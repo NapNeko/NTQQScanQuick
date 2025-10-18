@@ -320,6 +320,13 @@ namespace scanner
                 return;
             }
 
+            // Skip if section has no valid virtual address (e.g., relocatable objects)
+            // In such cases, addresses need relocation and parsing would not be meaningful
+            if (ehFrameSection->address == 0 || ehFrameSection->address < ehFrameSection->offset)
+            {
+                return;
+            }
+
             if (ehFrameSection->offset + ehFrameSection->size > fileData.size())
             {
                 return;
