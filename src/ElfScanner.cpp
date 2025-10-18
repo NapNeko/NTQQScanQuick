@@ -320,8 +320,10 @@ namespace scanner
                 return;
             }
 
-            // Skip if section has no valid virtual address (e.g., relocatable objects)
-            // In such cases, addresses need relocation and parsing would not be meaningful
+            // Skip if section has no valid virtual address (e.g., relocatable object files)
+            // Relocatable objects (.o files) have unresolved addresses that require link-time
+            // relocation. Parsing would produce meaningless results since pc-relative addressing
+            // depends on final virtual addresses.
             if (ehFrameSection->address == 0 || ehFrameSection->address < ehFrameSection->offset)
             {
                 return;
